@@ -183,5 +183,14 @@ fastp*
 .pixi/*
 !.pixi/config.toml
 
-#Claude code
+# Claude code
 .claude/*
+
+# IDE settings
+.vscode/
+.idea/
+
+# Test artifacts
+test_results.txt
+test_output/
+None/
