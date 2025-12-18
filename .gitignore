@@ -179,3 +179,9 @@ cython_debug/
 .env
 
 fastp*
+# pixi environments
+.pixi/*
+!.pixi/config.toml
+
+#Claude code
+.claude/*
