@@ -1,70 +1,93 @@
 import logging
 import math
 import os
+import shutil
 import subprocess
 import warnings
-from multiprocessing import cpu_count
+from functools import partial
+from multiprocessing import Pool, cpu_count
 from pathlib import Path
 from typing import Optional
 
+from .fs_abstraction import FilesystemAbstraction, get_filesystem
 from .io_helpers import PathLike, S3Files
 
 # kmc and kmc_tools are expected to be available on PATH via the oa-tools conda environment
 
 
-def _make_kmer_count_commands(
-    s3_records: S3Files,
-    kmers_dir: str | Path,
-    *,
+def _count_kmers_single_file(
+    rec,
+    kmers_dir: Path,
     k: int,
     min_kmer_freq: int,
+    fs: FilesystemAbstraction,
     memory_GB: int = 5,
     threads: int = 4,
-) -> list[str]:
-    """Helper function to construct shell commands for counting kmers in each input file.
+) -> None:
+    """Count k-mers from cloud/local file.
+
+    Note: KMC requires a file path (doesn't support stdin),
+    so we stream to a temp file only for KMC's input.
+    Streaming download means we don't need full disk space.
 
     Args:
-        s3_records: Files to count kmers in
+        rec: S3Record with file info
         kmers_dir: Directory for kmer counting output
         k: Kmer size
         min_kmer_freq: Minimum frequency threshold
+        fs: Filesystem abstraction instance
         memory_GB: Memory limit for KMC in GB
         threads: Number of threads per KMC process
-
-    Returns:
-        List of shell commands as strings
     """
-    # Find next power of 2 above 2 * min_kmer_freq using logarithms
-    max_count = 2 ** math.ceil(math.log2(2 * min_kmer_freq))
+    tmp_dir = Path(kmers_dir) / f"tmp_{rec.filename}"
+    tmp_fastq = tmp_dir / "reads.fastq"
+    kmc_tmp_dir = tmp_dir / "kmc_tmp"
+    kmc_out_prefix = tmp_dir / "kmers"
+    high_freq_out = Path(kmers_dir) / f"hfq_{rec.filename}.txt"
 
-    kmers_dir = Path(kmers_dir)
-    commands = []
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    kmc_tmp_dir.mkdir(parents=True, exist_ok=True)
 
-    for rec in s3_records:
-        # Define temporary and output paths
-        tmp_dir = kmers_dir / f"tmp_{rec.filename}"
-        tmp_fastq = tmp_dir / "reads.fastq"
-        kmc_tmp_dir = tmp_dir / "kmc_tmp"
-        kmc_out_prefix = tmp_dir / "kmers"
-        high_freq_out = kmers_dir / f"hfq_{rec.filename}.txt"
+    try:
+        # Stream from S3/GCS/local → decompress → temp file
+        with fs.open(rec.s3_path, "rb", compression="infer") as src:
+            with open(tmp_fastq, "wb") as dst:
+                for chunk in iter(lambda: src.read(8 * 1024 * 1024), b""):
+                    dst.write(chunk)
 
-        # Build command sequence
-        cmd = (
-            f"mkdir -p {tmp_dir} {kmc_tmp_dir} && "
-            f"aws s3 cp {rec.s3_path} - | "
-            f"zstd -d - -o {tmp_fastq} && "
-            f"kmc -k{k} "  # k-mer length
-            f"-cs{max_count} "  # max count before counter saturates
-            f"-ci{min_kmer_freq} "  # min count to store k-mer
-            f"-t{threads} "  # number of threads
-            f"-m{memory_GB} "  # max memory usage in GB
-            f"{tmp_fastq} {kmc_out_prefix} {kmc_tmp_dir} && "
-            f"kmc_tools transform {kmc_out_prefix} dump {high_freq_out} && "
-            f"rm -rf {tmp_dir}"
+        # Run KMC on temp file
+        max_count = 2 ** math.ceil(math.log2(2 * min_kmer_freq))
+        subprocess.run(
+            [
+                "kmc",
+                f"-k{k}",
+                f"-cs{max_count}",
+                f"-ci{min_kmer_freq}",
+                f"-t{threads}",
+                f"-m{memory_GB}",
+                str(tmp_fastq),
+                str(kmc_out_prefix),
+                str(kmc_tmp_dir),
+            ],
+            check=True,
+            capture_output=True,
         )
-        commands.append(cmd)
 
-    return commands
+        # Dump KMC results
+        subprocess.run(
+            [
+                "kmc_tools",
+                "transform",
+                str(kmc_out_prefix),
+                "dump",
+                str(high_freq_out),
+            ],
+            check=True,
+            capture_output=True,
+        )
+
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 def _high_freq_kmers_split_files(
@@ -120,24 +143,21 @@ def _high_freq_kmers_split_files(
     kmers_dir = workdir / "kmers"
     kmers_dir.mkdir()
 
-    # Create and execute kmer counting commands
-    cmds = _make_kmer_count_commands(
-        s3_records, kmers_dir, k=k, min_kmer_freq=min_kmer_freq
-    )
+    # Get filesystem abstraction
+    fs = get_filesystem()
 
-    cmd_file = kmers_dir / "kmer_count_commands.txt"
-    with open(cmd_file, "w") as f:
-        f.write("\n".join(cmds))
-
-    # Run commands in parallel with xargs
+    # Run kmer counting in parallel using multiprocessing.Pool
     logging.debug(f"Running KMC commands in parallel with {num_parallel} processes")
-    subprocess.run(
-        f"cat {cmd_file} | xargs -P {num_parallel} -I CMD bash -c 'CMD'",
-        shell=True,
-        check=True,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+    count_func = partial(
+        _count_kmers_single_file,
+        kmers_dir=kmers_dir,
+        k=k,
+        min_kmer_freq=min_kmer_freq,
+        fs=fs,
     )
+
+    with Pool(processes=num_parallel) as pool:
+        pool.map(count_func, s3_records)
 
     # Merge results
     result_path = kmers_dir / "high_freq_kmers.fasta"
@@ -152,7 +172,6 @@ def _high_freq_kmers_split_files(
             with open(kmers_dir / hff) as f:
                 for line in f:
                     # Each line is <kmer> <whitespace> <count>
-                    # e.g. "ACGTACGT 2341"
                     kmer, count = line.strip().split()
                     # Store max count seen for this kmer across all input files
                     kmer_counts[kmer] = max(kmer_counts.get(kmer, 0), int(count))
@@ -169,10 +188,86 @@ def _high_freq_kmers_split_files(
         logging.warning("No high-frequency kmers found in any input file")
         result_path.touch()
 
-    # Clean up command file
-    cmd_file.unlink()
-
     return result_path
+
+
+def _filter_single_file_bbduk(
+    rec,
+    high_freq_kmers_path: Path,
+    out_dir: Path,
+    k: int,
+    fs: FilesystemAbstraction,
+) -> None:
+    """Filter single file through BBDuk (stream cloud/local → BBDuk → compressed output).
+
+    Args:
+        rec: S3Record with file info
+        high_freq_kmers_path: Path to high-frequency kmers fasta
+        out_dir: Output directory for filtered reads
+        k: Kmer size
+        fs: Filesystem abstraction instance
+    """
+    out_path = out_dir / Path(rec.s3_path).parts[-1]
+
+    # Build BBDuk command (reads from stdin, writes to stdout)
+    bbduk_cmd = [
+        "bbduk.sh",
+        "in=stdin.fq",
+        "out=stdout.fq",
+        f"ref={high_freq_kmers_path}",
+        f"k={k}",
+        "rcomp=t",
+        "minkmerhits=1",
+        "mm=f",
+        "interleaved=t",
+        "threads=3",
+        "-Xmx2g",
+    ]
+
+    # Stream: cloud/local → decompress → BBDuk → compress → output
+    # Opens input with automatic decompression
+    with fs.open(rec.s3_path, "rb", compression="infer") as src:
+        # Start BBDuk process
+        bbduk_proc = subprocess.Popen(
+            bbduk_cmd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+        # Start zstd compression process
+        zstd_proc = subprocess.Popen(
+            ["zstd", "-q", "-T3", "-o", str(out_path)],
+            stdin=bbduk_proc.stdout,
+            stderr=subprocess.PIPE,
+        )
+
+        # Stream data through the pipeline
+        try:
+            for chunk in iter(lambda: src.read(8 * 1024 * 1024), b""):
+                bbduk_proc.stdin.write(chunk)
+            bbduk_proc.stdin.close()
+
+            # Wait for completion
+            bbduk_proc.wait()
+            zstd_proc.wait()
+
+            if bbduk_proc.returncode != 0:
+                stderr = bbduk_proc.stderr.read().decode()
+                raise subprocess.CalledProcessError(
+                    bbduk_proc.returncode, bbduk_cmd, stderr=stderr
+                )
+
+            if zstd_proc.returncode != 0:
+                stderr = zstd_proc.stderr.read().decode()
+                raise subprocess.CalledProcessError(
+                    zstd_proc.returncode, ["zstd"], stderr=stderr
+                )
+
+        finally:
+            bbduk_proc.stdout.close()
+            bbduk_proc.stderr.close()
+            zstd_proc.stderr.close()
 
 
 def frequency_filter_reads(
@@ -220,30 +315,20 @@ def frequency_filter_reads(
         s3_records, workdir, num_parallel=num_parallel, min_kmer_freq=min_kmer_freq, k=k
     )
 
-    out_paths = [out_dir / Path(rec.s3_path).parts[-1] for rec in s3_records]
+    # Get filesystem abstraction
+    fs = get_filesystem()
 
-    # Create BBDuk+compression commands
-    cmds = [
-        f"aws s3 cp {rec.s3_path} - | "
-        f"zstdcat - | "
-        f"bbduk.sh in=stdin.fq out=stdout.fq "
-        f"ref={high_freq_kmers_path} k={k} "
-        f"rcomp=t minkmerhits=1 mm=f interleaved=t "
-        f"threads=3 -Xmx2g | "
-        f"zstd -q -T3 > {p_out}"
-        for rec, p_out in zip(s3_records, out_paths)
-    ]
-
-    # Filter in parallel
-    cmd_file = workdir / "filter_commands.txt"
-    with open(cmd_file, "w") as f:
-        f.write("\n".join(cmds))
-
-    subprocess.run(
-        f"cat {cmd_file} | xargs -P {num_parallel} -I CMD sh -c 'CMD'",
-        shell=True,
-        check=True,
+    # Run BBDuk filtering in parallel using multiprocessing.Pool
+    logging.debug(f"Running BBDuk filtering in parallel with {num_parallel} processes")
+    filter_func = partial(
+        _filter_single_file_bbduk,
+        high_freq_kmers_path=high_freq_kmers_path,
+        out_dir=out_dir,
+        k=k,
+        fs=fs,
     )
 
-    cmd_file.unlink()
+    with Pool(processes=num_parallel) as pool:
+        pool.map(filter_func, s3_records)
+
     logging.debug("BBDuk filtering complete")
