@@ -11,7 +11,12 @@ PathLike = str | Path
 
 
 class S3Record(NamedTuple):
-    s3_path: str
+    """Record for storing file path and derived filename.
+
+    Note: Despite the name S3Record, this supports local, S3, and GCS paths.
+    The name is kept for backward compatibility.
+    """
+    s3_path: str  # Can be local path, s3://, or gs:// path
     filename: str  # filename stem, no extension
 
 
@@ -19,33 +24,59 @@ S3Files = List[S3Record]
 
 
 def process_s3_paths(paths: Iterable[str]) -> S3Files:
-    """For a list of input s3 paths like s3://your-bucket/delivery/reads.fastq validate
-    that all inputs are s3 paths and then return a corresponding S3Files.
+    """Process a list of file paths (local, s3://, or gs://) for assembly.
 
-    Throws an error if any paths are invalid. Current implementation is a bit lazy
-    and forces all paths to be under 245 characters. This could be relaxed if needed,
-    but it's nice because each filename unambiguously corresponds to a S3 source
-    without reference to an external key.
+    Validates that all inputs are valid paths and returns S3Files records.
+    Despite the function name, this supports local paths, S3 paths (s3://),
+    and GCS paths (gs://). The name is kept for backward compatibility.
+
+    Args:
+        paths: Iterable of file paths (local, s3://, or gs://)
+
+    Returns:
+        S3Files: List of S3Record objects with path and derived filename
+
+    Raises:
+        ValueError: If paths are not unique, don't end with .fastq.zst/.fq.zst,
+                   or filenames are too long (>245 chars)
+
+    Note:
+        Current implementation forces all paths to be under 245 characters.
+        This could be relaxed if needed, but it ensures each filename
+        unambiguously corresponds to a source without reference to an external key.
 
     To-do:
-        Validate that each S3 path points to an actual file
+        Validate that each path points to an actual file
     """
     paths = sorted(paths)
     if len(set(paths)) < len(paths):
         raise ValueError("Input paths are not unique.")
     records = []
     for path in paths:
-        if not path.lower().startswith("s3:/"):
-            # technically // but this is robust to str(Path(...)) which strips a /
-            raise ValueError(f"Path {path} is not a valid s3 path.")
+        # Validate file extension
         if not (path.lower().endswith(".fastq.zst") or path.lower().endswith(".fq.zst")):
-            raise ValueError(f"Path {path} must be .fastq.zst")
+            raise ValueError(f"Path {path} must end with .fastq.zst or .fq.zst")
         # to-do: validate path points to a file
 
-        filename = "-".join(Path(path).parts[1:])  # drop the s3:// prefix
-        filename = filename.rsplit(".", maxsplit=2)[0]  # drop the .fastq.zst extension
+        # Generate filename based on path type
+        path_lower = path.lower()
+        if path_lower.startswith("s3://"):
+            # S3 path: drop s3:// prefix
+            filename = "-".join(Path(path).parts[1:])
+        elif path_lower.startswith("gs://"):
+            # GCS path: drop gs:// prefix
+            filename = "-".join(Path(path).parts[1:])
+        else:
+            # Local path: use full path components, skipping root "/" or "\"
+            parts = [p for p in Path(path).parts if p not in ("/", "\\")]
+            filename = "-".join(parts)
+
+        # Drop the .fastq.zst or .fq.zst extension
+        filename = filename.rsplit(".", maxsplit=2)[0]
+
         if len(filename) > 245:
-            raise ValueError(f"Path {path} is too long.")
+            raise ValueError(f"Derived filename from path {path} is too long (>245 chars): {filename}")
+
         records.append(S3Record(path, filename))
 
     return records

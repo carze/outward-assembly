@@ -34,6 +34,65 @@ def test_process_s3_paths_invalid():
 
 @pytest.mark.fast
 @pytest.mark.unit
+def test_process_gcs_paths():
+    """Processing GCS paths should work like S3 paths."""
+    gcs_paths = [
+        "gs://bucket/data/reads_1.fastq.zst",
+        "gs://bucket/data/reads_2.fq.zst",
+    ]
+    records = process_s3_paths(gcs_paths)
+    assert len(records) == 2
+    assert records[0].s3_path == "gs://bucket/data/reads_1.fastq.zst"
+    assert records[0].filename == "bucket-data-reads_1"
+    assert records[1].filename == "bucket-data-reads_2"
+    # Ensure no slashes in derived filenames
+    for rec in records:
+        assert "/" not in rec.filename
+
+
+@pytest.mark.fast
+@pytest.mark.unit
+def test_process_local_paths():
+    """Processing local paths should strip leading / or \\ from filenames."""
+    local_paths = [
+        "/data/reads/sample_1.fastq.zst",
+        "data/reads/sample_2.fq.zst",
+    ]
+    records = process_s3_paths(local_paths)
+    assert len(records) == 2
+    assert records[0].s3_path == "/data/reads/sample_1.fastq.zst"
+    assert records[0].filename == "data-reads-sample_1"
+    assert records[1].s3_path == "data/reads/sample_2.fq.zst"
+    assert records[1].filename == "data-reads-sample_2"
+    # Ensure no slashes in derived filenames
+    for rec in records:
+        assert "/" not in rec.filename
+
+
+@pytest.mark.fast
+@pytest.mark.unit
+def test_process_mixed_paths():
+    """Processing mixed S3, GCS, and local paths should all work together."""
+    mixed_paths = [
+        "s3://bucket/s3_data.fastq.zst",
+        "gs://bucket/gcs_data.fastq.zst",
+        "/local/data.fastq.zst",
+    ]
+    records = process_s3_paths(mixed_paths)
+    assert len(records) == 3
+    # Paths are sorted, so order will be: /local, gs://, s3://
+    assert records[0].s3_path == "/local/data.fastq.zst"
+    assert records[0].filename == "local-data"
+    assert records[1].s3_path == "gs://bucket/gcs_data.fastq.zst"
+    assert records[1].filename == "bucket-gcs_data"
+    assert records[2].s3_path == "s3://bucket/s3_data.fastq.zst"
+    assert records[2].filename == "bucket-s3_data"
+    # Ensure all original paths are preserved in sorted order
+    assert [r.s3_path for r in records] == sorted(mixed_paths)
+
+
+@pytest.mark.fast
+@pytest.mark.unit
 def test_count_lines(temp_empty_file):
     assert _count_lines(temp_empty_file) == 0
     with open(temp_empty_file, "a") as f:
