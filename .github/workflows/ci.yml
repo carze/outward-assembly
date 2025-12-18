@@ -4,6 +4,7 @@ on:
   push:
     branches: [ main ]
   pull_request:
+  workflow_dispatch:
 
 jobs:
   lint_and_test:
@@ -31,31 +32,77 @@ jobs:
         restore-keys: |
           conda-${{ runner.os }}-
           
-    - name: Install uv
-      run: |
-        curl -LsSf https://astral.sh/uv/install.sh | sh
-        echo "$HOME/.cargo/bin" >> $GITHUB_PATH
-    
-    - name: Install Python dependencies
+    - name: Install pixi
+      run: curl -fsSL https://pixi.sh/install.sh | bash
+
+    - name: Install dependencies
       shell: bash -l {0}
       run: |
         conda activate oa-tools
-        uv sync --extra dev
+        pixi install
 
     - name: ruff
       shell: bash -l {0}
       run: |
         conda activate oa-tools
-        uv run ruff check outward_assembly tests
+        pixi run --environment dev ruff check outward_assembly tests
 
     - name: black
       shell: bash -l {0}
       run: |
         conda activate oa-tools
-        uv run black --check outward_assembly tests
+        pixi run --environment dev black --check outward_assembly tests
 
     - name: Run tests
       shell: bash -l {0}
       run: |
         conda activate oa-tools
-        uv run pytest -v -m "not requires_aws"
+        pixi run --environment dev pytest -v -m "not requires_cloud and not requires_tools"
+
+  cloud-integration-tests:
+    name: Cloud Integration Tests
+    runs-on: ubuntu-latest
+    # Only run on manual trigger
+    if: github.event_name == 'workflow_dispatch'
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ secrets.AWS_TEST_ROLE }}
+        aws-region: us-east-1
+
+    - name: Setup Miniconda
+      uses: conda-incubator/setup-miniconda@v3
+      with:
+        auto-update-conda: true
+        python-version: "3.13"
+        miniforge-version: latest
+        activate-environment: oa-tools
+        environment-file: oa_tools_lock.yml
+        use-mamba: true
+
+    - name: Install pixi
+      run: curl -fsSL https://pixi.sh/install.sh | bash
+
+    - name: Install s5cmd
+      run: |
+        curl -L https://github.com/peak/s5cmd/releases/latest/download/s5cmd_Linux-64bit.tar.gz | tar xz
+        sudo mv s5cmd /usr/local/bin/
+
+    - name: Install dependencies
+      shell: bash -l {0}
+      run: |
+        conda activate oa-tools
+        pixi install
+
+    - name: Run cloud integration tests
+      shell: bash -l {0}
+      run: |
+        conda activate oa-tools
+        pixi run --environment dev pytest tests/integration/ -v -m "requires_cloud"
+      env:
+        S3_TEST_BUCKET: ${{ secrets.S3_TEST_BUCKET }}
+        GCS_TEST_BUCKET: ${{ secrets.GCS_TEST_BUCKET }}
