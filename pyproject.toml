@@ -30,13 +30,13 @@ dev = [
 
 [tool.pytest.ini_options]
 markers = [
-    "fast",
-    "slow", 
-    "unit",
-    "integration",
-    "e2e: end to end",
-    "requires_tools: Requires bioinformatics tools (megahit, bbduk, etc.)",
-    "requires_aws: Requires AWS credentials and services"
+    "unit: Fast unit tests (always run)",
+    "fast: Very fast tests (<1s)",
+    "integration: Integration tests (may be slow)",
+    "requires_cloud: Requires cloud credentials (S3/GCS/Azure)",
+    "requires_tools: Requires bioinformatics tools (BBDuk, KMC, etc.)",
+    "slow: Slow tests (>10s)",
+    "benchmark: Performance benchmarks",
 ]
 
 [tool.setuptools]

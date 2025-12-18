@@ -902,7 +902,7 @@ packages:
 - pypi: ./
   name: outward-assembly
   version: 0.1.0
-  sha256: f28d56503607a19eb2cc5471a6ad23ccb68abc8fe5174faa44a5b2f4380eb4d3
+  sha256: 26da3a3a8367e467381cff170604b717f1423e9b4d947a1ac851f86a2c4ed48e
   requires_dist:
   - networkx~=3.4.2
   - biopython~=1.84
