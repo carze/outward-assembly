@@ -5,6 +5,8 @@ from outward_assembly.io_helpers import (
 )
 from outward_assembly.execution_state import ExecutionState
 from outward_assembly.decision_manager import DecisionManager
+from outward_assembly.config import CloudConfig
+from outward_assembly.fs_abstraction import get_filesystem
 from dotenv import load_dotenv
 import logging
 import sys
@@ -23,6 +25,20 @@ def main(input_config_path: str):
     logger = logging.getLogger(__name__)
 
     config = load_config(input_config_path)
+
+    # Initialize cloud configuration
+    cloud_config = CloudConfig(
+        aws_profile=config.get("cloud", {}).get("aws_profile"),
+        gcs_project=config.get("cloud", {}).get("gcs_project"),
+        prefer_native_tools=config.get("cloud", {}).get("prefer_native_tools", True)
+    )
+
+    # Initialize filesystem with cloud config
+    fs = get_filesystem(
+        transport_params=cloud_config.get_transport_params(),
+        default_compression='infer',
+        prefer_native_tools=cloud_config.prefer_native_tools
+    )
 
     execution_state = ExecutionState.from_config(config)
 
