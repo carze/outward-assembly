@@ -295,6 +295,39 @@ def _subset_split_files(
         )
 
 
+def _stream_filter_single_file(
+    rec: "S3Record",
+    ref_fasta_path: Path,
+    workdir: Path,
+    read_subset_k: int,
+    n_threads: int,
+    ordered: bool,
+    fs: "FilesystemAbstraction"
+) -> None:
+    """Stream single file through BBDuk filtering (no temp files).
+
+    Works with S3, GCS, or local paths via filesystem abstraction.
+    Uses s5cmd for cloud (1-2 GB/s) or smart_open for local.
+    """
+    bbduk_cmd = [
+        "bbduk.sh",
+        "in=stdin.fq",
+        f"outm={workdir / rec.filename}_1.fastq",
+        f"outm2={workdir / rec.filename}_2.fastq",
+        f"ref={ref_fasta_path}",
+        f"k={read_subset_k}",
+        "rcomp=t",
+        "minkmerhits=1",
+        "mm=f",
+        "interleaved=t",
+        f"ordered={'t' if ordered else 'f'}",
+        f"threads={n_threads}",
+        "-Xmx2g"
+    ]
+
+    fs.stream_to_process(rec.s3_path, bbduk_cmd)
+
+
 def _subset_split_files_local(
     s3_records: S3Files,
     ref_fasta_path: PathLike,
@@ -305,9 +338,7 @@ def _subset_split_files_local(
     n_threads: int = 3,
     ordered: bool = True,
 ) -> None:
-    """Use parallel BBDuk to subset reads from split files sharing kmers with ref. By
-    default, the order of filtered reads will match the order of inputs, which makes
-    the overall assembly algorithm closer to determinsitic.
+    """Subset reads using k-mer matching (cloud-agnostic).
 
     Args:
         s3_records: Processed S3 paths of read files
@@ -318,6 +349,10 @@ def _subset_split_files_local(
         n_threads: Threads per BBDuk process
         ordered: Force output order to match input read order
     """
+    from .fs_abstraction import get_filesystem
+    from multiprocessing import Pool
+    from functools import partial
+
     ref_fasta_path = Path(ref_fasta_path)
     workdir = Path(workdir)
     if not ref_fasta_path.is_file():
@@ -328,30 +363,20 @@ def _subset_split_files_local(
     if num_parallel is None:
         num_parallel = max(1, cpu_count() // 4)
 
-    cmds = [
-        f"aws s3 cp {rec.s3_path} - | "
-        f"zstdcat - | "
-        f"bbduk.sh in=stdin.fq "
-        f"outm={workdir / rec.filename}_1.fastq outm2={workdir / rec.filename}_2.fastq "
-        f"ref={ref_fasta_path} k={read_subset_k} "
-        f"rcomp=t minkmerhits=1 mm=f interleaved=t "
-        f"ordered={'t' if ordered else 'f'} "
-        f"threads={n_threads} -Xmx2g"
-        for rec in s3_records
-    ]
+    fs = get_filesystem()
 
-    cmd_file = workdir / "filter_commands.txt"
-    with open(cmd_file, "w") as f:
-        f.write("\n".join(cmds))
-
-    # shell=True needed for commands with pipes
-    subprocess.run(
-        f"cat {cmd_file} | xargs -P {num_parallel} -I CMD sh -c 'CMD'",
-        shell=True,
-        check=True,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+    stream_func = partial(
+        _stream_filter_single_file,
+        ref_fasta_path=ref_fasta_path,
+        workdir=workdir,
+        read_subset_k=read_subset_k,
+        n_threads=n_threads,
+        ordered=ordered,
+        fs=fs
     )
+
+    with Pool(num_parallel) as pool:
+        pool.map(stream_func, s3_records)
 
     # Concatenate per-split hits
     for read_num in (1, 2):
@@ -359,9 +384,7 @@ def _subset_split_files_local(
         split_files = [workdir / f"{rec.filename}_{read_num}.fastq" for rec in s3_records]
         concat_and_tag_fastq(split_files, output_path)
         for split_file in split_files:
-            (workdir / split_file).unlink()
-
-    cmd_file.unlink()
+            split_file.unlink()
 
 
 def _create_nextflow_config(
