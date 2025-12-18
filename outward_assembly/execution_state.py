@@ -71,7 +71,7 @@ class ExecutionState:
         hours = float(time_str.split()[0])
 
         # Validate config file
-        if decision.get("automate", True) and decision.get("strategy", ""):
+        if decision.get("automate", False) and not decision.get("strategy"):
             raise ValueError("Strategy must be specified if automate is True")
 
         return cls(
