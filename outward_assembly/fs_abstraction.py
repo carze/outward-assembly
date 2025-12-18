@@ -162,6 +162,10 @@ class FilesystemAbstraction:
         """
         compression = compression or self.default_compression
 
+        # Translate common compression aliases to smart_open format
+        if compression == "infer":
+            compression = "infer_from_extension"
+
         try:
             if self._is_remote(path):
                 # Use smart_open for cloud paths
