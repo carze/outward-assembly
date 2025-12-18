@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import yaml
 
@@ -20,7 +20,7 @@ class ExecutionState:
     Attributes:
         input_seed_path (str): Path to the input seed file.
         input_dataset_list (str): List of input datasets.
-        adapter_path (str): Path to the adapter.
+        adapter_path (Optional[str]): Path to the adapter file, or None if not using adapters.
         output_path (str): Path for the output file.
         use_batch (bool): Flag indicating whether to use batch processing.
         work_dir (str): Working directory for the execution.
@@ -37,7 +37,7 @@ class ExecutionState:
     # General config
     input_seed_path: str
     input_dataset_list: str
-    adapter_path: str
+    adapter_path: Optional[str]
     output_dir: str
     output_filename: str
     use_batch: bool
@@ -74,10 +74,15 @@ class ExecutionState:
         if decision.get("automate", False) and not decision.get("strategy"):
             raise ValueError("Strategy must be specified if automate is True")
 
+        # Normalize adapter_path: convert string "None", "null", or empty string to Python None
+        adapter_path = assembly.get("adapter_path", None)
+        if adapter_path in ("None", "null", ""):
+            adapter_path = None
+
         return cls(
             input_seed_path=assembly.get("input_seed_path"),
             input_dataset_list=assembly.get("input_dataset_list"),
-            adapter_path=assembly.get("adapter_path", None),
+            adapter_path=adapter_path,
             output_dir=assembly.get("out_dir"),
             output_filename=assembly.get("output_filename"),
             use_batch=assembly.get("use_batch", DEFAULT_USE_BATCH),
