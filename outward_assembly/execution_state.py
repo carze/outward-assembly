@@ -4,6 +4,8 @@ from typing import Any, Dict
 
 import yaml
 
+from .fs_abstraction import get_filesystem
+
 DEFAULT_COMPUTE_TIME_LIMIT = "5 hours"
 DEFAULT_MAX_OUTER_ITERATIONS = 20
 DEFAULT_DATASET_PRIORITY = 1
@@ -143,6 +145,7 @@ class ExecutionState:
         Args:
             yaml_path: Path where the YAML file should be written
         """
+        fs = get_filesystem()
         config = self.to_yaml_config()
-        with open(yaml_path, "w") as f:
+        with fs.open(yaml_path, "w") as f:
             yaml.dump(config, f, default_flow_style=False)

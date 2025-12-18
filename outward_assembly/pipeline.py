@@ -9,6 +9,7 @@ from typing import List, Optional, TypedDict
 from Bio import SeqIO
 from Bio.Seq import Seq
 
+from .fs_abstraction import get_filesystem
 from .io_helpers import (
     PathLike,
     S3Files,
@@ -71,6 +72,7 @@ def _compute_iteration_metrics(iter: int, workdir: Path) -> InnerIterationMetric
     Returns:
         InnerIterationMetrics: A dictionary containing the metrics for the current iteration.
     """
+    fs = get_filesystem()
     # Note that _adapter_trim_iter_reads puts trimmed reads in READS_{1/2}_FASTQ, so if the
     # user has adapter trimming enabled and we call this function after trimming adapters,
     # we'll be counting adapter-trimmed reads -- which is presumably what we want to count.
@@ -79,10 +81,13 @@ def _compute_iteration_metrics(iter: int, workdir: Path) -> InnerIterationMetric
     # Get contig stats
     contig_stats = _fasta_longest_total(workdir / CURRENT_CONTIGS)
 
+    with fs.open(workdir / CURRENT_CONTIGS, "r") as f:
+        contig_count = sum(1 for _ in SeqIO.parse(f, "fasta"))
+
     return {
         "iteration": iter,
         "read_pair_count": read_pair_count,
-        "contig_count": sum(1 for _ in SeqIO.parse(workdir / CURRENT_CONTIGS, "fasta")),
+        "contig_count": contig_count,
         "longest_contig_length": contig_stats.longest,
         "total_contig_length": contig_stats.total,
     }
@@ -148,6 +153,7 @@ def _outward_main_loop(
 
     Please see the docstring for outward_assembly for parameter descriptions.
     """
+    fs = get_filesystem()
     workdir = Path(workdir)
     if not workdir.is_dir():
         raise ValueError(f"Working directory does not exist: {workdir}")
@@ -220,7 +226,7 @@ def _outward_main_loop(
     assembly_metrics = _compute_assembly_metrics(workdir, inner_iterations, start_time)
 
     # Save stats to JSON in work directory
-    with open(workdir / "assembly_metrics.json", "w") as f:
+    with fs.open(workdir / "assembly_metrics.json", "w") as f:
         json.dump(assembly_metrics, f, indent=2)
 
     return assembly_metrics
@@ -317,15 +323,17 @@ def outward_assembly(
 
     # Let's assemble
     try:
+        fs = get_filesystem()
         logger.info(f"Outward assembly: {seed_path} {workdir} {output_path}")
         _record_inputs(workdir, seed_path, s3_paths)
 
         # Copy seed sequences to start as current contigs
         current_contigs = workdir / CURRENT_CONTIGS
-        shutil.copy2(seed_path, current_contigs)
+        fs.copy(seed_path, current_contigs)
 
         # Read all seed sequences from multi-fasta
-        seed_seqs = [record.seq for record in SeqIO.parse(seed_path, "fasta")]
+        with fs.open(seed_path, "r") as f:
+            seed_seqs = [record.seq for record in SeqIO.parse(f, "fasta")]
 
         if not seed_seqs:
             raise ValueError("No seed sequences found in seed fasta file")
@@ -350,8 +358,7 @@ def outward_assembly(
         )
 
         # Copy final contigs to output location
-
-        shutil.copy2(current_contigs, output_path)
+        fs.copy(current_contigs, output_path)
 
         return assembly_metrics
 
