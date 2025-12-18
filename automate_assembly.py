@@ -8,6 +8,7 @@ from outward_assembly.decision_manager import DecisionManager
 from outward_assembly.config import CloudConfig
 from outward_assembly.fs_abstraction import get_filesystem
 from dotenv import load_dotenv
+import argparse
 import logging
 import sys
 import os
@@ -21,7 +22,6 @@ def main(input_config_path: str):
 
     See docs/usage.md for more information.
     """
-    logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger(__name__)
 
     config = load_config(input_config_path)
@@ -106,11 +106,57 @@ def main(input_config_path: str):
             break
 
 
-if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print("Error: The input configuration path is required.")
-        print("Variable: input_config - Path to the input configuration YAML file.")
-        sys.exit(1)
+def parse_args():
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(
+        description="Automated outward assembly pipeline for growing contigs from seed sequences.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Run with a configuration file
+  %(prog)s config.yaml
 
-    input_config_path = sys.argv[1]
-    main(input_config_path)
+  # Run with verbose logging
+  %(prog)s config.yaml -v
+
+Configuration file format:
+  See docs/usage.md for detailed configuration file structure and options.
+
+For more information, visit:
+  https://github.com/carze/outward-assembly
+        """
+    )
+
+    parser.add_argument(
+        "config",
+        metavar="CONFIG_FILE",
+        type=str,
+        help="Path to YAML configuration file (local, s3://, or gs://)"
+    )
+
+    parser.add_argument(
+        "-v", "--verbose",
+        action="store_true",
+        help="Enable verbose logging (DEBUG level)"
+    )
+
+    parser.add_argument(
+        "--version",
+        action="version",
+        version="outward-assembly 0.1.0"
+    )
+
+    return parser.parse_args()
+
+
+if __name__ == "__main__":
+    args = parse_args()
+
+    # Configure logging level based on verbosity
+    log_level = logging.DEBUG if args.verbose else logging.INFO
+    logging.basicConfig(
+        level=log_level,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
+
+    main(args.config)
