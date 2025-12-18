@@ -48,6 +48,63 @@ uv run your_script.py
 
 **Note:** You need both uv (for Python packages) and mamba/conda (for bioinformatics tools like MEGAHIT, BBMap, etc.).
 
+## Cloud Storage Setup (Optional)
+
+The filesystem abstraction supports AWS S3, Google Cloud Storage (GCS), and local filesystems. If you plan to use cloud storage, configure credentials as follows:
+
+### AWS S3
+
+**Option 1: AWS CLI configure**
+```bash
+aws configure
+```
+
+**Option 2: Environment variables**
+```bash
+export AWS_ACCESS_KEY_ID=...
+export AWS_SECRET_ACCESS_KEY=...
+export AWS_REGION=us-east-1
+```
+
+### Google Cloud Storage
+
+For optimal performance with GCS, create HMAC keys for s5cmd compatibility:
+
+**Step 1: Create HMAC keys**
+```bash
+gcloud storage hmac create
+```
+
+**Step 2: Add to ~/.aws/credentials**
+```bash
+cat >> ~/.aws/credentials << EOF
+[gcs]
+aws_access_key_id = GOOG1EXAMPLE...
+aws_secret_access_key = abcd1234...
+EOF
+```
+
+**Step 3: Use with s5cmd**
+```bash
+AWS_PROFILE=gcs s5cmd ls gs://my-bucket/
+```
+
+### Verify Cloud Setup
+
+```bash
+# Check if s5cmd is available (optional but recommended for performance)
+s5cmd version
+
+# Verify filesystem abstraction
+python -c "from outward_assembly.fs_abstraction import FilesystemAbstraction; fs = FilesystemAbstraction(); print(f's5cmd available: {fs._has_s5cmd}')"
+
+# Run unit tests
+pixi run --environment dev pytest tests/unit_tests/ -v
+
+# Or with uv (if not using pixi)
+uv run pytest tests/unit_tests/ -v
+```
+
 ## (Optional) Batch profile
 
 Using the batch profile requires doing two steps:

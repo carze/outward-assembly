@@ -52,7 +52,7 @@ Table of Contents:
 
 The primary entrypoint to outward assembly is the Python function `outward_assembly` in `outward_assembly/pipeline.py`; a command line interface does not (yet) exist. See the docstring of `outward_assembly` for a detailed description of keyword parameters. The required parameters are:
 * The path to a seed sequence (fasta) to assemble outward from;
-* A list of s3 paths of reads to assemble. Reads must be in [SIZ format](./algorithm_details.md#input-data);
+* A list of paths to reads to assemble (supports s3://, gs://, or local paths). Reads must be in [SIZ format](./algorithm_details.md#input-data);
 * Path for output contigs.
 
 Using the `outward_assembly` function as described above would be considered running outward assembly in *normal* mode, whereas our *automated* mode builds abstractions on top of this function to allow for more complex workflows. Specifically, *automated* mode automates the labor-intensive iterative process of:
@@ -92,7 +92,7 @@ Call `outward_assembly` with `use_batch = true`, making sure to pass values for 
 
 #### Usage
 
-The usage of the *normal* mode in outward assembly requires that the user call the outward assembly function with the appropriate parameters. The only setup that the user needs to do is to generate a list of s3 paths to their reads.
+The usage of the *normal* mode in outward assembly requires that the user call the outward assembly function with the appropriate parameters. The only setup that the user needs to do is to generate a list of paths to their reads.
 
 We've provided the function `s3_files_with_prefix` in `io_helpers.py` to assist you in generating a list of s3 paths. E.g. to get paths to split files from three demux sets:
 
@@ -110,6 +110,32 @@ where `outward-assembly-test-data/siz/simulated-abcbd-reads_1` would correspond 
 s3://nao-testing/outward-assembly-test-data/siz/simulated-abcbd-reads_1_div0001.fastq.zst
 s3://nao-testing/outward-assembly-test-data/siz/simulated-abcbd-reads_1_div0002.fastq.zst
 s3://nao-testing/outward-assembly-test-data/siz/simulated-abcbd-reads_1_div0003.fastq.zst
+```
+
+**Cloud-agnostic support**: The filesystem abstraction supports S3, GCS, and local paths interchangeably:
+
+```python
+# S3 paths (existing)
+prefixes_s3 = [
+    "outward-assembly-test-data/siz/simulated-abcbd-reads_1",
+    "outward-assembly-test-data/siz/simulated-abcbd-reads_2",
+]
+paths_s3 = [p for prefix in prefixes_s3 for p in s3_files_with_prefix("nao-testing", prefix)]
+
+# GCS paths (new)
+prefixes_gcs = [
+    "gs://my-bucket/reads/sample_1",
+    "gs://my-bucket/reads/sample_2",
+]
+
+# Local paths (new)
+prefixes_local = [
+    "/data/reads/sample_1.fastq.zst",
+    "/data/reads/sample_2.fastq.zst",
+]
+
+# Mix cloud providers (new)
+mixed_paths = paths_s3 + prefixes_gcs + prefixes_local
 ```
 
 ### Automated mode
