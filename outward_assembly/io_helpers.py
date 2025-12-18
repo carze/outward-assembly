@@ -5,7 +5,6 @@ import re
 from pathlib import Path
 from typing import Iterable, List, NamedTuple
 
-import boto3
 import yaml
 
 PathLike = str | Path
@@ -64,18 +63,9 @@ def s3_files_with_prefix(bucket: str, prefix: str) -> list[str]:
     Returns:
         List of full S3 URIs of matching objects
     """
-    s3_client = boto3.client("s3")
-    results = []
-
-    paginator = s3_client.get_paginator("list_objects_v2")
-    for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
-        if "Contents" in page:
-            for obj in page["Contents"]:
-                key = obj["Key"]
-                full_uri = f"s3://{bucket}/{key}"
-                results.append(full_uri)
-
-    return results
+    from .fs_abstraction import get_filesystem
+    fs = get_filesystem()
+    return fs.list_files(f"s3://{bucket}/{prefix}")
 
 
 def _read_files_in_dir(dir: PathLike) -> List[str]:
@@ -96,12 +86,16 @@ def dir_to_s3_paths(dir: PathLike, s3_prefix: str) -> List[str]:
 
 
 def _count_lines(filename):
-    with open(filename, "rb") as f:
+    from .fs_abstraction import get_filesystem
+    fs = get_filesystem()
+    with fs.open(filename, "rb") as f:
         return sum(1 for _ in f)
 
 
 def load_config(yaml_path):
-    with open(yaml_path, "r") as file:
+    from .fs_abstraction import get_filesystem
+    fs = get_filesystem()
+    with fs.open(yaml_path, "r") as file:
         config = yaml.safe_load(file)
     return config
 
@@ -122,9 +116,12 @@ def get_s3_paths_by_priority(input_csv: str, priority: int) -> list[str]:
         ValueError: If priorities don't form a continuous sequence from 1 to N
                    or if any priority is less than 1
     """
+    from .fs_abstraction import get_filesystem
+    fs = get_filesystem()
+
     # First pass: collect all priorities
     priorities = set()
-    with open(input_csv, "r") as f:
+    with fs.open(input_csv, "r") as f:
         reader = csv.DictReader(f)
         for row in reader:
             priority_val = int(row["priority"])
@@ -144,7 +141,7 @@ def get_s3_paths_by_priority(input_csv: str, priority: int) -> list[str]:
         )
 
     # Second pass: collect paths for requested priority
-    with open(input_csv, "r") as f:
+    with fs.open(input_csv, "r") as f:
         reader = csv.DictReader(f)
         filtered_paths = [
             str(row["s3_path"]) for row in reader if int(row["priority"]) == priority
@@ -167,8 +164,11 @@ def concat_and_tag_fastq(input_files: list[PathLike], output_file: PathLike) -> 
     Raises:
         RuntimeError: If any of the input files do not exist or an IO error occurs.
     """
+    from .fs_abstraction import get_filesystem
+    fs = get_filesystem()
+
     try:
-        with open(output_file, "w") as outfile:
+        with fs.open(output_file, "w") as outfile:
             for filename in input_files:
                 if os.path.getsize(filename) == 0:
                     continue
@@ -176,7 +176,7 @@ def concat_and_tag_fastq(input_files: list[PathLike], output_file: PathLike) -> 
                 # Remove trailing _{1/2}.fastq
                 sample_name = re.sub(r"_[12]\.fastq$", "", base_filename)
 
-                with open(filename, "r") as infile:
+                with fs.open(filename, "r") as infile:
                     # Identify headers by line number, not leading @ since quality
                     # lines can also start with @
                     for identifier, sequence, plus, quality in itertools.batched(infile, 4):
